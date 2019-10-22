@@ -225,8 +225,6 @@ impl NotifyWork for Stratum {
 
 		self.service.push_work_all(
 			self.dispatcher.payload(pow_hash, difficulty, number)
-		).unwrap_or_else(
-			|e| warn!(target: "stratum", "Error while pushing work: {:?}", e)
 		);
 	}
 }
@@ -239,23 +237,20 @@ impl Stratum {
 
 		let dispatcher = Arc::new(StratumJobDispatcher::new(miner, client));
 
-		let stratum_svc = StratumService::start(
+		let service = StratumService::start(
 			&SocketAddr::new(options.listen_addr.parse::<IpAddr>()?, options.port),
 			dispatcher.clone(),
 			options.secret.clone(),
 		)?;
 
-		Ok(Stratum {
-			dispatcher: dispatcher,
-			service: stratum_svc,
-		})
+		Ok(Stratum { dispatcher, service })
 	}
 
 	/// Start STRATUM job dispatcher and register it in the miner
 	#[cfg(feature = "work-notify")]
 	pub fn register(cfg: &Options, miner: Arc<Miner>, client: Weak<Client>) -> Result<(), Error> {
 		let stratum = Stratum::start(cfg, Arc::downgrade(&miner.clone()), client)?;
-		miner.add_work_listener(Box::new(stratum) as Box<NotifyWork>);
+		miner.add_work_listener(Box::new(stratum) as Box<dyn NotifyWork>);
 		Ok(())
 	}
 }

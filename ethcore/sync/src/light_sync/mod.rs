@@ -38,15 +38,20 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::time::{Instant, Duration};
 
-use types::encoded;
+use crate::{
+	api::Notification,
+	chain::SyncState as ChainSyncState,
+};
+
+use common_types::encoded;
 use light::client::{AsLightClient, LightChainClient};
 use light::net::{
 	PeerStatus, Announcement, Handler, BasicContext,
 	EventContext, Capabilities, ReqId, Status,
 	Error as NetError,
 };
-use chain::SyncState as ChainSyncState;
 use light::request::{self, CompleteHeadersRequest as HeadersRequest};
+use log::{debug, trace};
 use network::PeerId;
 use ethereum_types::{H256, U256};
 use parking_lot::{Mutex, RwLock};
@@ -54,7 +59,6 @@ use rand::{rngs::OsRng, seq::SliceRandom};
 use futures::sync::mpsc;
 
 use self::sync_round::{AbortReason, SyncRound, ResponseContext};
-use api::Notification;
 
 mod response;
 mod sync_round;
@@ -78,13 +82,13 @@ struct ChainInfo {
 }
 
 impl PartialOrd for ChainInfo {
-	fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
 		self.head_td.partial_cmp(&other.head_td)
 	}
 }
 
 impl Ord for ChainInfo {
-	fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
 		self.head_td.cmp(&other.head_td)
 	}
 }
@@ -102,14 +106,20 @@ impl Peer {
 	}
 }
 
-// search for a common ancestor with the best chain.
+/// Search for a common ancestor with the best chain.
 #[derive(Debug)]
 enum AncestorSearch {
-	Queued(u64), // queued to search for blocks starting from here.
-	Awaiting(ReqId, u64, HeadersRequest), // awaiting response for this request.
-	Prehistoric, // prehistoric block found. TODO: start to roll back CHTs.
-	FoundCommon(u64, H256), // common block found.
-	Genesis, // common ancestor is the genesis.
+	/// Queued to search for blocks starting from here.
+	Queued(u64), //
+	/// Awaiting response for this request.
+	Awaiting(ReqId, u64, HeadersRequest),
+	/// Pre-historic block found.
+	// TODO: start to roll back CHTs.
+	Prehistoric,
+	/// Common block found.
+	FoundCommon(u64, H256),
+	/// Common ancestor is the genesis.
+	Genesis,
 }
 
 impl AncestorSearch {
@@ -120,7 +130,7 @@ impl AncestorSearch {
 		}
 	}
 
-	fn process_response<L>(self, ctx: &ResponseContext, client: &L) -> AncestorSearch
+	fn process_response<L>(self, ctx: &dyn ResponseContext, client: &L) -> AncestorSearch
 		where L: AsLightClient
 	{
 		let client = client.as_light_client();
@@ -258,7 +268,7 @@ impl Deref for SyncStateWrapper {
 struct ResponseCtx<'a> {
 	peer: PeerId,
 	req_id: ReqId,
-	ctx: &'a BasicContext,
+	ctx: &'a dyn BasicContext,
 	data: &'a [encoded::Header],
 }
 
@@ -292,7 +302,7 @@ struct PendingReq {
 impl<L: AsLightClient + Send + Sync> Handler for LightSync<L> {
 	fn on_connect(
 		&self,
-		ctx: &EventContext,
+		ctx: &dyn EventContext,
 		status: &Status,
 		capabilities: &Capabilities
 	) -> PeerStatus {
@@ -319,7 +329,7 @@ impl<L: AsLightClient + Send + Sync> Handler for LightSync<L> {
 		}
 	}
 
-	fn on_disconnect(&self, ctx: &EventContext, unfulfilled: &[ReqId]) {
+	fn on_disconnect(&self, ctx: &dyn EventContext, unfulfilled: &[ReqId]) {
 		let peer_id = ctx.peer();
 
 		let peer = match self.peers.write().remove(&peer_id).map(|p| p.into_inner()) {
@@ -370,7 +380,7 @@ impl<L: AsLightClient + Send + Sync> Handler for LightSync<L> {
 		self.maintain_sync(ctx.as_basic());
 	}
 
-	fn on_announcement(&self, ctx: &EventContext, announcement: &Announcement) {
+	fn on_announcement(&self, ctx: &dyn EventContext, announcement: &Announcement) {
 		let (last_td, chain_info) = {
 			let peers = self.peers.read();
 			match peers.get(&ctx.peer()) {
@@ -406,7 +416,7 @@ impl<L: AsLightClient + Send + Sync> Handler for LightSync<L> {
 		self.maintain_sync(ctx.as_basic());
 	}
 
-	fn on_responses(&self, ctx: &EventContext, req_id: ReqId, responses: &[request::Response]) {
+	fn on_responses(&self, ctx: &dyn EventContext, req_id: ReqId, responses: &[request::Response]) {
 		let peer = ctx.peer();
 		if !self.peers.read().contains_key(&peer) {
 			return
@@ -448,7 +458,7 @@ impl<L: AsLightClient + Send + Sync> Handler for LightSync<L> {
 		self.maintain_sync(ctx.as_basic());
 	}
 
-	fn tick(&self, ctx: &BasicContext) {
+	fn tick(&self, ctx: &dyn BasicContext) {
 		self.maintain_sync(ctx);
 	}
 }
@@ -492,8 +502,8 @@ impl<L: AsLightClient> LightSync<L> {
 	}
 
 	// handles request dispatch, block import, state machine transitions, and timeouts.
-	fn maintain_sync(&self, ctx: &BasicContext) {
-		use ethcore::error::{Error as EthcoreError, ImportError};
+	fn maintain_sync(&self, ctx: &dyn BasicContext) {
+		use common_types::errors::{EthcoreError, ImportError};
 
 		const DRAIN_AMOUNT: usize = 128;
 
@@ -706,7 +716,7 @@ impl<L: AsLightClient> LightSync<L> {
 			peers: RwLock::new(HashMap::new()),
 			pending_reqs: Mutex::new(HashMap::new()),
 			client: client,
-			rng: Mutex::new(OsRng::new()?),
+			rng: Mutex::new(OsRng),
 			senders: RwLock::new(Vec::new()),
 			state: Mutex::new(SyncStateWrapper::idle()),
 			is_idle: Mutex::new(true),

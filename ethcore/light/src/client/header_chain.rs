@@ -30,15 +30,20 @@ use std::sync::Arc;
 
 use cache::Cache;
 use cht;
-use common_types::block_status::BlockStatus;
-use common_types::encoded;
-use common_types::header::Header;
-use common_types::ids::BlockId;
-use ethcore::engines::epoch::{Transition as EpochTransition, PendingTransition as PendingEpochTransition};
-use ethcore::error::{Error, EthcoreResult, BlockError};
-use ethcore::spec::{Spec, SpecHardcodedSync};
+use common_types::{
+	block_status::BlockStatus,
+	encoded,
+	engines::epoch::{
+		Transition as EpochTransition,
+		PendingTransition as PendingEpochTransition,
+	},
+	errors::{EthcoreError as Error, BlockError, EthcoreResult},
+	header::Header,
+	ids::BlockId,
+};
+use spec::{Spec, SpecHardcodedSync};
 use ethereum_types::{H256, H264, U256};
-use heapsize::HeapSizeOf;
+use parity_util_mem::{MallocSizeOf, MallocSizeOfOps};
 use kvdb::{DBTransaction, KeyValueDB};
 use parking_lot::{Mutex, RwLock};
 use fastmap::H256FastMap;
@@ -95,8 +100,8 @@ struct Entry {
 	canonical_hash: H256,
 }
 
-impl HeapSizeOf for Entry {
-	fn heap_size_of_children(&self) -> usize {
+impl MallocSizeOf for Entry {
+	fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
 		if self.candidates.spilled() {
 			self.candidates.capacity() * ::std::mem::size_of::<Candidate>()
 		} else {
@@ -202,21 +207,28 @@ pub enum HardcodedSync {
 	Deny,
 }
 
+#[derive(MallocSizeOf)]
 /// Header chain. See module docs for more details.
 pub struct HeaderChain {
+	#[ignore_malloc_size_of = "ignored for performance reason"]
 	genesis_header: encoded::Header, // special-case the genesis.
 	candidates: RwLock<BTreeMap<u64, Entry>>,
+	#[ignore_malloc_size_of = "ignored for performance reason"]
 	best_block: RwLock<BlockDescriptor>,
+	#[ignore_malloc_size_of = "ignored for performance reason"]
 	live_epoch_proofs: RwLock<H256FastMap<EpochTransition>>,
-	db: Arc<KeyValueDB>,
+	#[ignore_malloc_size_of = "ignored for performance reason"]
+	db: Arc<dyn KeyValueDB>,
+	#[ignore_malloc_size_of = "ignored for performance reason"]
 	col: Option<u32>,
+	#[ignore_malloc_size_of = "ignored for performance reason"]
 	cache: Arc<Mutex<Cache>>,
 }
 
 impl HeaderChain {
 	/// Create a new header chain given this genesis block and database to read from.
 	pub fn new(
-		db: Arc<KeyValueDB>,
+		db: Arc<dyn KeyValueDB>,
 		col: Option<u32>,
 		spec: &Spec,
 		cache: Arc<Mutex<Cache>>,
@@ -260,7 +272,7 @@ impl HeaderChain {
 			let best_block = {
 				let era = match candidates.get(&curr.best_num) {
 					Some(era) => era,
-					None => bail!("Database corrupt: highest block referenced but no data."),
+					None => return Err("Database corrupt: highest block referenced but no data.".into()),
 				};
 
 				let best = &era.candidates[0];
@@ -538,7 +550,7 @@ impl HeaderChain {
 						let canon = &era_entry.candidates[0];
 						(canon.hash, canon.total_difficulty)
 					};
-					cht::compute_root(cht_num, ::itertools::repeat_call(iter))
+					cht::compute_root(cht_num, std::iter::repeat_with(iter))
 						.expect("fails only when too few items; this is checked; qed")
 				};
 
@@ -582,7 +594,7 @@ impl HeaderChain {
 					} else {
 						let msg = format!("header of block #{} not found in DB ; database in an \
 											inconsistent state", h_num);
-						bail!(msg);
+						return Err(msg.into());
 					};
 
 					let decoded = header.decode().expect("decoding db value failed");
@@ -838,12 +850,6 @@ impl HeaderChain {
 	}
 }
 
-impl HeapSizeOf for HeaderChain {
-	fn heap_size_of_children(&self) -> usize {
-		self.candidates.read().heap_size_of_children()
-	}
-}
-
 /// Iterator over a block's ancestry.
 pub struct AncestryIter<'a> {
 	next: Option<encoded::Header>,
@@ -871,7 +877,7 @@ mod tests {
 	use cache::Cache;
 	use common_types::header::Header;
 	use common_types::ids::BlockId;
-	use ethcore::spec::Spec;
+	use spec;
 	use ethereum_types::U256;
 	use kvdb::KeyValueDB;
 	use kvdb_memorydb;
@@ -879,13 +885,13 @@ mod tests {
 	use std::time::Duration;
 	use parking_lot::Mutex;
 
-	fn make_db() -> Arc<KeyValueDB> {
+	fn make_db() -> Arc<dyn KeyValueDB> {
 		Arc::new(kvdb_memorydb::create(0))
 	}
 
 	#[test]
 	fn basic_chain() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 
@@ -919,7 +925,7 @@ mod tests {
 
 	#[test]
 	fn reorganize() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
@@ -1002,7 +1008,7 @@ mod tests {
 
 	#[test]
 	fn earliest_is_latest() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
 
@@ -1014,7 +1020,7 @@ mod tests {
 
 	#[test]
 	fn restore_from_db() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
@@ -1052,7 +1058,7 @@ mod tests {
 
 	#[test]
 	fn restore_higher_non_canonical() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
@@ -1109,7 +1115,7 @@ mod tests {
 
 	#[test]
 	fn genesis_header_available() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
@@ -1124,7 +1130,7 @@ mod tests {
 
 	#[test]
 	fn epoch_transitions_available_after_cht() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 		let cache = Arc::new(Mutex::new(Cache::new(Default::default(), Duration::from_secs(6 * 3600))));
@@ -1190,7 +1196,7 @@ mod tests {
 
 	#[test]
 	fn hardcoded_sync_gen() {
-		let spec = Spec::new_test();
+		let spec = spec::new_test();
 		let genesis_header = spec.genesis_header();
 		let db = make_db();
 

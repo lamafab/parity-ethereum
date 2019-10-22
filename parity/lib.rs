@@ -15,7 +15,6 @@
 // along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Ethcore client application.
-
 #![warn(missing_docs)]
 
 extern crate ansi_term;
@@ -42,9 +41,11 @@ extern crate toml;
 
 extern crate blooms_db;
 extern crate cli_signer;
+
+extern crate client_traits;
 extern crate common_types as types;
+extern crate engine;
 extern crate ethcore;
-extern crate ethcore_call_contract as call_contract;
 extern crate ethcore_db;
 extern crate ethcore_io as io;
 extern crate ethcore_light as light;
@@ -70,8 +71,10 @@ extern crate parity_rpc;
 extern crate parity_runtime;
 extern crate parity_updater as updater;
 extern crate parity_version;
-extern crate parity_whisper;
 extern crate registrar;
+extern crate snapshot;
+extern crate spec;
+extern crate verification;
 
 #[macro_use]
 extern crate log as rlog;
@@ -109,10 +112,9 @@ mod rpc_apis;
 mod run;
 mod secretstore;
 mod signer;
-mod snapshot;
+mod snapshot_cmd;
 mod upgrade;
 mod user_defaults;
-mod whisper;
 mod db;
 
 use std::fs::File;
@@ -211,7 +213,7 @@ fn execute<Cr, Rr>(
 		Cmd::SignerSign { id, pwfile, port, authfile } => cli_signer::signer_sign(id, pwfile, port, authfile).map(|s| ExecutionAction::Instant(Some(s))),
 		Cmd::SignerList { port, authfile } => cli_signer::signer_list(port, authfile).map(|s| ExecutionAction::Instant(Some(s))),
 		Cmd::SignerReject { id, port, authfile } => cli_signer::signer_reject(id, port, authfile).map(|s| ExecutionAction::Instant(Some(s))),
-		Cmd::Snapshot(snapshot_cmd) => snapshot::execute(snapshot_cmd).map(|s| ExecutionAction::Instant(Some(s))),
+		Cmd::Snapshot(snapshot_cmd) => snapshot_cmd::execute(snapshot_cmd).map(|s| ExecutionAction::Instant(Some(s))),
 		Cmd::ExportHardcodedSync(export_hs_cmd) => export_hardcoded_sync::execute(export_hs_cmd).map(|s| ExecutionAction::Instant(Some(s))),
 	}
 }

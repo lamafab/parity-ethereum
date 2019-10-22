@@ -22,7 +22,8 @@ use ethereum_types::{H256, H160, Address, U256, BigEndianHash};
 use ethjson;
 use ethkey::{self, Signature, Secret, Public, recover, public_to_address};
 use hash::keccak;
-use heapsize::HeapSizeOf;
+use parity_util_mem::MallocSizeOf;
+
 use rlp::{self, RlpStream, Rlp, DecoderError, Encodable};
 
 use transaction::error;
@@ -37,7 +38,7 @@ pub const UNSIGNED_SENDER: Address = H160([0xff; 20]);
 pub const SYSTEM_ADDRESS: Address = H160([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,0xff, 0xff, 0xff, 0xff,0xff, 0xff, 0xff, 0xff,0xff, 0xff, 0xff, 0xfe]);
 
 /// Transaction action type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, MallocSizeOf)]
 pub enum Action {
 	/// Create creates new contract.
 	Create,
@@ -53,7 +54,11 @@ impl Default for Action {
 impl rlp::Decodable for Action {
 	fn decode(rlp: &Rlp) -> Result<Self, DecoderError> {
 		if rlp.is_empty() {
-			Ok(Action::Create)
+			if rlp.is_data() {
+				Ok(Action::Create)
+			} else {
+				Err(DecoderError::RlpExpectedToBeData)
+			}
 		} else {
 			Ok(Action::Call(rlp.as_val()?))
 		}
@@ -99,7 +104,7 @@ pub mod signature {
 
 /// A set of information describing an externally-originating message call
 /// or contract creation operation.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, MallocSizeOf)]
 pub struct Transaction {
 	/// Nonce.
 	pub nonce: U256,
@@ -133,14 +138,8 @@ impl Transaction {
 	}
 }
 
-impl HeapSizeOf for Transaction {
-	fn heap_size_of_children(&self) -> usize {
-		self.data.heap_size_of_children()
-	}
-}
-
-impl From<ethjson::state::Transaction> for SignedTransaction {
-	fn from(t: ethjson::state::Transaction) -> Self {
+impl From<ethjson::transaction::Transaction> for SignedTransaction {
+	fn from(t: ethjson::transaction::Transaction) -> Self {
 		let to: Option<ethjson::hash::Address> = t.to.into();
 		let secret = t.secret.map(|s| Secret::from(s.0));
 		let tx = Transaction {
@@ -255,7 +254,7 @@ impl Transaction {
 }
 
 /// Signed transaction information without verified signature.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, MallocSizeOf)]
 pub struct UnverifiedTransaction {
 	/// Plain Transaction.
 	unsigned: Transaction,
@@ -268,12 +267,6 @@ pub struct UnverifiedTransaction {
 	s: U256,
 	/// Hash of the transaction
 	hash: H256,
-}
-
-impl HeapSizeOf for UnverifiedTransaction {
-	fn heap_size_of_children(&self) -> usize {
-		self.unsigned.heap_size_of_children()
-	}
 }
 
 impl Deref for UnverifiedTransaction {
@@ -319,9 +312,17 @@ impl UnverifiedTransaction {
 		self
 	}
 
-	/// Checks is signature is empty.
+	/// Checks if the signature is empty.
 	pub fn is_unsigned(&self) -> bool {
 		self.r.is_zero() && self.s.is_zero()
+	}
+
+	/// Returns transaction receiver, if any
+	pub fn receiver(&self) -> Option<Address> {
+		match self.unsigned.action {
+			Action::Create => None,
+			Action::Call(receiver) => Some(receiver),
+		}
 	}
 
 	/// Append object with a signature into RLP stream
@@ -404,20 +405,19 @@ impl UnverifiedTransaction {
 		};
 		Ok(())
 	}
+
+	/// Try to verify transaction and recover sender.
+	pub fn verify_unordered(self) -> Result<SignedTransaction, ethkey::Error> {
+		SignedTransaction::new(self)
+	}
 }
 
 /// A `UnverifiedTransaction` with successfully recovered `sender`.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, MallocSizeOf)]
 pub struct SignedTransaction {
 	transaction: UnverifiedTransaction,
 	sender: Address,
 	public: Option<Public>,
-}
-
-impl HeapSizeOf for SignedTransaction {
-	fn heap_size_of_children(&self) -> usize {
-		self.transaction.heap_size_of_children()
-	}
 }
 
 impl rlp::Encodable for SignedTransaction {
@@ -573,6 +573,20 @@ mod tests {
 		assert_eq!(t.value, U256::from(0x0au64));
 		assert_eq!(public_to_address(&t.recover_public().unwrap()), Address::from_str("0f65fe9276bc9a24ae7083ae28e2660ef72df99e").unwrap());
 		assert_eq!(t.chain_id(), None);
+	}
+
+	#[test]
+	fn empty_atom_as_create_action() {
+		let empty_atom = [0x80];
+		let action: Action = rlp::decode(&empty_atom).unwrap();
+		assert_eq!(action, Action::Create);
+	}
+
+	#[test]
+	fn empty_list_as_create_action_rejected() {
+		let empty_list = [0xc0];
+		let action: Result<Action, DecoderError> = rlp::decode(&empty_list);
+		assert_eq!(action, Err(DecoderError::RlpExpectedToBeData));
 	}
 
 	#[test]

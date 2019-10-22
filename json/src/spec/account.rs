@@ -17,11 +17,12 @@
 //! Spec account deserialization.
 
 use std::collections::BTreeMap;
-use uint::Uint;
-use bytes::Bytes;
-use spec::builtin::Builtin;
+
+use crate::{bytes::Bytes, spec::builtin::Builtin, uint::Uint};
+use serde::Deserialize;
 
 /// Spec account.
+#[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
@@ -33,6 +34,8 @@ pub struct Account {
 	pub nonce: Option<Uint>,
 	/// Code.
 	pub code: Option<Bytes>,
+	/// Version.
+	pub version: Option<Uint>,
 	/// Storage.
 	pub storage: Option<BTreeMap<Uint, Uint>>,
 	/// Constructor.
@@ -48,12 +51,8 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeMap;
-	use serde_json;
-	use spec::account::Account;
+	use super::{Account, Bytes, BTreeMap, Uint};
 	use ethereum_types::U256;
-	use uint::Uint;
-	use bytes::Bytes;
 
 	#[test]
 	fn account_balance_missing_not_empty() {

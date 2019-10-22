@@ -17,14 +17,14 @@
 //! Receipt
 
 use ethereum_types::{H160, H256, U256, Address, Bloom};
-use heapsize::HeapSizeOf;
+use parity_util_mem::MallocSizeOf;
 use rlp::{Rlp, RlpStream, Encodable, Decodable, DecoderError};
 
 use BlockNumber;
 use log_entry::{LogEntry, LocalizedLogEntry};
 
 /// Transaction outcome store in the receipt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, MallocSizeOf)]
 pub enum TransactionOutcome {
 	/// Status and state root are unknown under EIP-98 rules.
 	Unknown,
@@ -35,7 +35,7 @@ pub enum TransactionOutcome {
 }
 
 /// Information describing execution of a transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, MallocSizeOf)]
 pub struct Receipt {
 	/// The total gas used in the block following execution of the transaction.
 	pub gas_used: U256,
@@ -110,12 +110,6 @@ impl Decodable for Receipt {
 	}
 }
 
-impl HeapSizeOf for Receipt {
-	fn heap_size_of_children(&self) -> usize {
-		self.logs.heap_size_of_children()
-	}
-}
-
 /// Receipt with additional info.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RichReceipt {
@@ -128,6 +122,7 @@ pub struct RichReceipt {
 	/// The gas used in the execution of the transaction. Note the difference of meaning to `Receipt::gas_used`.
 	pub gas_used: U256,
 	/// Contract address.
+	/// NOTE: It is an Option because only `Action::Create` transactions has a contract address
 	pub contract_address: Option<Address>,
 	/// Logs
 	pub logs: Vec<LogEntry>,
@@ -135,6 +130,11 @@ pub struct RichReceipt {
 	pub log_bloom: Bloom,
 	/// Transaction outcome.
 	pub outcome: TransactionOutcome,
+	/// Receiver address
+	/// NOTE: It is an Option because only `Action::Call` transactions has a receiver address
+	pub to: Option<H160>,
+	/// Sender
+	pub from: H160
 }
 
 /// Receipt with additional info.
@@ -153,6 +153,7 @@ pub struct LocalizedReceipt {
 	/// The gas used in the execution of the transaction. Note the difference of meaning to `Receipt::gas_used`.
 	pub gas_used: U256,
 	/// Contract address.
+	/// NOTE: It is an Option because only `Action::Create` transactions has a contract address
 	pub contract_address: Option<Address>,
 	/// Logs
 	pub logs: Vec<LocalizedLogEntry>,
@@ -161,6 +162,7 @@ pub struct LocalizedReceipt {
 	/// Transaction outcome.
 	pub outcome: TransactionOutcome,
 	/// Receiver address
+	/// NOTE: It is an Option because only `Action::Call` transactions has a receiver address
 	pub to: Option<H160>,
 	/// Sender
 	pub from: H160

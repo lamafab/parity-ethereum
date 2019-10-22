@@ -33,14 +33,14 @@ use v1::tests::mocked::parity;
 
 use accounts::AccountProvider;
 use bytes::ToPretty;
+use ethcore::test_helpers::TestBlockChainClient;
 use ethereum_types::{U256, Address, Signature, H256};
-use ethcore::client::TestBlockChainClient;
 use ethkey::Secret;
 use ethstore::ethkey::{Generator, Random};
+use parity_runtime::{Runtime, Executor};
 use parking_lot::Mutex;
 use serde_json;
 use types::transaction::{Transaction, Action, SignedTransaction};
-use parity_runtime::{Runtime, Executor};
 
 struct SigningTester {
 	pub runtime: Runtime,
@@ -220,7 +220,7 @@ fn should_check_status_of_request_when_its_resolved() {
 	tester.signer.request_confirmed(sender, Ok(ConfirmationResponse::Signature(Signature::from_low_u64_be(1))));
 
 	// This is not ideal, but we need to give futures some time to be executed, and they need to run in a separate thread
-	thread::sleep(Duration::from_millis(20));
+	thread::sleep(Duration::from_millis(100));
 
 	// when
 	let request = r#"{

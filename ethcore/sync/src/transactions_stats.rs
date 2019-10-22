@@ -14,16 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity Ethereum.  If not, see <http://www.gnu.org/licenses/>.
 
-use api::TransactionStats;
 use std::hash::BuildHasher;
 use std::collections::{HashSet, HashMap};
+
+use crate::api::TransactionStats;
+
 use ethereum_types::{H256, H512};
 use fastmap::H256FastMap;
-use types::BlockNumber;
+use common_types::BlockNumber;
 
 type NodeId = H512;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, MallocSizeOf)]
 pub struct Stats {
 	first_seen: BlockNumber,
 	propagated_to: HashMap<NodeId, usize>,
@@ -50,7 +52,7 @@ impl<'a> From<&'a Stats> for TransactionStats {
 	}
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, MallocSizeOf)]
 pub struct TransactionsStats {
 	pending_transactions: H256FastMap<Stats>,
 }
@@ -89,9 +91,9 @@ impl TransactionsStats {
 
 #[cfg(test)]
 mod tests {
-
 	use std::collections::{HashMap, HashSet};
 	use super::{Stats, TransactionsStats, NodeId, H256};
+	use macros::hash_map;
 
 	#[test]
 	fn should_keep_track_of_propagations() {

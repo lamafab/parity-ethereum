@@ -25,13 +25,14 @@ pub struct RuntimeContext {
 	pub sender: Address,
 	pub origin: Address,
 	pub code_address: Address,
+	pub code_version: U256,
 	pub value: U256,
 }
 
 pub struct Runtime<'a> {
 	gas_counter: u64,
 	gas_limit: u64,
-	ext: &'a mut vm::Ext,
+	ext: &'a mut dyn vm::Ext,
 	context: RuntimeContext,
 	memory: MemoryRef,
 	args: Vec<u8>,
@@ -127,7 +128,7 @@ impl ::std::fmt::Display for Error {
 			Error::AllocationFailed => write!(f, "Memory allocation failed (OOM)"),
 			Error::BadUtf8 => write!(f, "String encoding is bad utf-8 sequence"),
 			Error::GasLimit => write!(f, "Invocation resulted in gas limit violated"),
-			Error::Log => write!(f, "Error occured while logging an event"),
+			Error::Log => write!(f, "Error occurred while logging an event"),
 			Error::InvalidSyscall => write!(f, "Invalid syscall signature encountered at runtime"),
 			Error::Other => write!(f, "Other unspecified error"),
 			Error::Unreachable => write!(f, "Unreachable instruction encountered"),
@@ -146,7 +147,7 @@ impl<'a> Runtime<'a> {
 
 	/// New runtime for wasm contract with specified params
 	pub fn with_params(
-		ext: &mut vm::Ext,
+		ext: &mut dyn vm::Ext,
 		memory: MemoryRef,
 		gas_limit: u64,
 		args: Vec<u8>,
@@ -529,7 +530,7 @@ impl<'a> Runtime<'a> {
 			* U256::from(self.ext.schedule().wasm().opcodes_mul)
 			/ U256::from(self.ext.schedule().wasm().opcodes_div);
 
-		match self.ext.create(&gas_left, &endowment, &code, scheme, false).ok().expect("Trap is false; trap error will not happen; qed") {
+		match self.ext.create(&gas_left, &endowment, &code, &self.context.code_version, scheme, false).ok().expect("Trap is false; trap error will not happen; qed") {
 			vm::ContractCreateResult::Created(address, gas_left) => {
 				self.memory.set(result_ptr, address.as_bytes())?;
 				self.gas_counter = self.gas_limit -

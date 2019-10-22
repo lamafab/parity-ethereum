@@ -20,17 +20,15 @@ use std::time::{Duration, Instant};
 use std::thread;
 
 use ansi_term::Colour;
-use bytes::Bytes;
-use call_contract::CallContract;
-use ethcore::client::{BlockId, Client, Mode, DatabaseCompactionProfile, VMType, BlockChainClient, BlockInfo};
+use client_traits::{BlockInfo, BlockChainClient};
+use ethcore::client::{Client, DatabaseCompactionProfile, VMType};
 use ethcore::miner::{self, stratum, Miner, MinerService, MinerOptions};
-use ethcore::snapshot::{self, SnapshotConfiguration};
-use ethcore::spec::{SpecParams, OptimizeFor};
-use ethcore::verification::queue::VerifierSettings;
+use snapshot::{self, SnapshotConfiguration};
+use spec::SpecParams;
+use verification::queue::VerifierSettings;
 use ethcore_logger::{Config as LogConfig, RotatingLogger};
 use ethcore_service::ClientService;
-use ethereum_types::Address;
-use futures::{IntoFuture, Stream};
+use futures::Stream;
 use hash_fetch::{self, fetch};
 use informant::{Informant, LightNodeInformantData, FullNodeInformantData};
 use journaldb::Algorithm;
@@ -40,6 +38,11 @@ use miner::work_notify::WorkPoster;
 use node_filter::NodeFilter;
 use parity_runtime::Runtime;
 use sync::{self, SyncConfig, PrivateTxHandler};
+use types::{
+	client_types::Mode,
+	engines::OptimizeFor,
+	snapshot::Snapshotting,
+};
 use parity_rpc::{
 	Origin, Metadata, NetworkSettings, informant, PubSubSession, FutureResult, FutureResponse, FutureOutput
 };
@@ -58,12 +61,12 @@ use user_defaults::UserDefaults;
 use ipfs;
 use jsonrpc_core;
 use modules;
-use registrar::{RegistrarClient, Asynchronous};
 use rpc;
 use rpc_apis;
 use secretstore;
 use signer;
 use db;
+use registrar::RegistrarClient;
 
 // how often to take periodic snapshots.
 const SNAPSHOT_PERIOD: u64 = 5000;
@@ -130,7 +133,6 @@ pub struct RunCmd {
 	pub serve_light: bool,
 	pub light: bool,
 	pub no_persistent_txqueue: bool,
-	pub whisper: ::whisper::Config,
 	pub no_hardcoded_sync: bool,
 	pub max_round_blocks_to_import: usize,
 	pub on_demand_response_time_window: Option<u64>,
@@ -269,15 +271,6 @@ fn execute_light_impl<Cr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq
 		net_conf.boot_nodes = spec.nodes.clone();
 	}
 
-	let mut attached_protos = Vec::new();
-	let whisper_factory = if cmd.whisper.enabled {
-		let whisper_factory = ::whisper::setup(cmd.whisper.target_message_pool_size, &mut attached_protos)
-			.map_err(|e| format!("Failed to initialize whisper: {}", e))?;
-		whisper_factory
-	} else {
-		None
-	};
-
 	// set network path.
 	net_conf.net_config_path = Some(db_dirs.network_path().to_string_lossy().into_owned());
 	let sync_params = LightSyncParams {
@@ -286,7 +279,6 @@ fn execute_light_impl<Cr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq
 		network_id: cmd.network_id.unwrap_or(spec.network_id()),
 		subprotocol_name: sync::LIGHT_PROTOCOL,
 		handlers: vec![on_demand.clone()],
-		attached_protos: attached_protos,
 	};
 	let light_sync = LightSync::new(sync_params).map_err(|e| format!("Error starting network: {}", e))?;
 	let light_sync = Arc::new(light_sync);
@@ -311,22 +303,21 @@ fn execute_light_impl<Cr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq
 
 	// start RPCs
 	let deps_for_rpc_apis = Arc::new(rpc_apis::LightDependencies {
-		signer_service: signer_service,
+		signer_service,
 		client: client.clone(),
 		sync: light_sync.clone(),
 		net: light_sync.clone(),
 		accounts: account_provider,
-		logger: logger,
+		logger,
 		settings: Arc::new(cmd.net_settings),
-		on_demand: on_demand,
+		on_demand,
 		cache: cache.clone(),
 		transaction_queue: txq,
 		ws_address: cmd.ws_conf.address(),
-		fetch: fetch,
+		fetch,
 		geth_compatibility: cmd.geth_compatibility,
 		experimental_rpcs: cmd.experimental_rpcs,
 		executor: runtime.executor(),
-		whisper_rpc: whisper_factory,
 		private_tx_service: None, //TODO: add this to client.
 		gas_price_percentile: cmd.gas_price_percentile,
 		poll_lifetime: cmd.poll_lifetime
@@ -349,7 +340,7 @@ fn execute_light_impl<Cr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq
 		LightNodeInformantData {
 			client: client.clone(),
 			sync: light_sync.clone(),
-			cache: cache,
+			cache,
 		},
 		None,
 		Some(rpc_stats),
@@ -452,7 +443,14 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 	}
 
 	sync_config.fork_block = spec.fork_block();
-	let mut warp_sync = spec.engine.supports_warp() && cmd.warp_sync;
+	let snapshot_supported =
+		if let Snapshotting::Unsupported = spec.engine.snapshot_mode() {
+			false
+		} else {
+			true
+		};
+
+	let mut warp_sync = snapshot_supported && cmd.warp_sync;
 	if warp_sync {
 		// Logging is not initialized yet, so we print directly to stderr
 		if fat_db {
@@ -581,7 +579,7 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 	// take handle to private transactions service
 	let private_tx_service = service.private_tx_service();
 	let private_tx_provider = private_tx_service.provider();
-	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<BlockChainClient>, a)));
+	let connection_filter = connection_filter_address.map(|a| Arc::new(NodeFilter::new(Arc::downgrade(&client) as Weak<dyn BlockChainClient>, a)));
 	let snapshot_service = service.snapshot_service();
 	if let Some(filter) = connection_filter.clone() {
 		service.add_notify(filter.clone());
@@ -633,20 +631,9 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 			.map_err(|e| format!("Stratum start error: {:?}", e))?;
 	}
 
-	let mut attached_protos = Vec::new();
-
-	let whisper_factory = if cmd.whisper.enabled {
-		let whisper_factory = ::whisper::setup(cmd.whisper.target_message_pool_size, &mut attached_protos)
-			.map_err(|e| format!("Failed to initialize whisper: {}", e))?;
-
-		whisper_factory
-	} else {
-		None
-	};
-
-	let private_tx_sync: Option<Arc<PrivateTxHandler>> = match cmd.private_tx_enabled {
-		true => Some(private_tx_service.clone() as Arc<PrivateTxHandler>),
-		false => None,
+	let (private_tx_sync, private_state) = match cmd.private_tx_enabled {
+		true => (Some(private_tx_service.clone() as Arc<dyn PrivateTxHandler>), Some(private_tx_provider.private_state_db())),
+		false => (None, None),
 	};
 
 	// create sync object
@@ -657,10 +644,10 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 		client.clone(),
 		snapshot_service.clone(),
 		private_tx_sync,
+		private_state,
 		client.clone(),
 		&cmd.logger_config,
-		attached_protos,
-		connection_filter.clone().map(|f| f as Arc<::sync::ConnectionFilter + 'static>),
+		connection_filter.clone().map(|f| f as Arc<dyn sync::ConnectionFilter + 'static>),
 	).map_err(|e| format!("Sync error: {}", e))?;
 
 	service.add_notify(chain_notify.clone());
@@ -696,29 +683,18 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 		chain_notify.start();
 	}
 
-	let contract_client = {
-		struct FullRegistrar { client: Arc<Client> }
-		impl RegistrarClient for FullRegistrar {
-			type Call = Asynchronous;
-			fn registrar_address(&self) -> Result<Address, String> {
-				self.client.registrar_address()
-					.ok_or_else(|| "Registrar not defined.".into())
-			}
-			fn call_contract(&self, address: Address, data: Bytes) -> Self::Call {
-				Box::new(self.client.call_contract(BlockId::Latest, address, data).into_future())
-			}
-		}
-
-		Arc::new(FullRegistrar { client: client.clone() })
-	};
+	let fetcher = hash_fetch::Client::with_fetch(
+		Arc::downgrade(&(service.client() as Arc<dyn RegistrarClient>)),
+		fetch.clone(),
+		runtime.executor()
+	);
 
 	// the updater service
-	let updater_fetch = fetch.clone();
 	let updater = Updater::new(
-		&Arc::downgrade(&(service.client() as Arc<BlockChainClient>)),
+		&Arc::downgrade(&(service.client() as Arc<dyn BlockChainClient>)),
 		&Arc::downgrade(&sync_provider),
 		update_policy,
-		hash_fetch::Client::with_fetch(contract_client.clone(), updater_fetch, runtime.executor())
+		fetcher
 	);
 	service.add_notify(updater.clone());
 
@@ -745,7 +721,6 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 		ws_address: cmd.ws_conf.address(),
 		fetch: fetch.clone(),
 		executor: runtime.executor(),
-		whisper_rpc: whisper_factory,
 		private_tx_service: Some(private_tx_service.clone()),
 		gas_price_percentile: cmd.gas_price_percentile,
 		poll_lifetime: cmd.poll_lifetime,
@@ -853,14 +828,14 @@ enum RunningClientInner {
 		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<rpc_apis::LightClientNotifier>>,
 		informant: Arc<Informant<LightNodeInformantData>>,
 		client: Arc<LightClient>,
-		keep_alive: Box<Any>,
+		keep_alive: Box<dyn Any>,
 	},
 	Full {
 		rpc: jsonrpc_core::MetaIoHandler<Metadata, informant::Middleware<informant::ClientNotifier>>,
 		informant: Arc<Informant<FullNodeInformantData>>,
 		client: Arc<Client>,
 		client_service: Arc<ClientService>,
-		keep_alive: Box<Any>,
+		keep_alive: Box<dyn Any>,
 	},
 }
 
@@ -900,17 +875,27 @@ impl RunningClient {
 				// Create a weak reference to the client so that we can wait on shutdown
 				// until it is dropped
 				let weak_client = Arc::downgrade(&client);
-				// Shutdown and drop the ServiceClient
+				// Shutdown and drop the ClientService
 				client_service.shutdown();
+				trace!(target: "shutdown", "ClientService shut down");
 				drop(client_service);
+				trace!(target: "shutdown", "ClientService dropped");
 				// drop this stuff as soon as exit detected.
 				drop(rpc);
+				trace!(target: "shutdown", "RPC dropped");
 				drop(keep_alive);
+				trace!(target: "shutdown", "KeepAlive dropped");
 				// to make sure timer does not spawn requests while shutdown is in progress
 				informant.shutdown();
+				trace!(target: "shutdown", "Informant shut down");
 				// just Arc is dropping here, to allow other reference release in its default time
 				drop(informant);
+				trace!(target: "shutdown", "Informant dropped");
 				drop(client);
+				trace!(target: "shutdown", "Client dropped");
+				// This may help when debugging ref cycles. Requires nightly-only  `#![feature(weak_counts)]`
+				// trace!(target: "shutdown", "Waiting for refs to Client to shutdown, strong_count={:?}, weak_count={:?}", weak_client.strong_count(), weak_client.weak_count());
+				trace!(target: "shutdown", "Waiting for refs to Client to shutdown");
 				wait_for_drop(weak_client);
 			}
 		}
@@ -944,24 +929,30 @@ fn print_running_environment(data_dir: &str, dirs: &Directories, db_dirs: &Datab
 }
 
 fn wait_for_drop<T>(w: Weak<T>) {
-	let sleep_duration = Duration::from_secs(1);
-	let warn_timeout = Duration::from_secs(60);
-	let max_timeout = Duration::from_secs(300);
+	const SLEEP_DURATION: Duration = Duration::from_secs(1);
+	const WARN_TIMEOUT: Duration = Duration::from_secs(60);
+	const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 
 	let instant = Instant::now();
 	let mut warned = false;
 
-	while instant.elapsed() < max_timeout {
+	while instant.elapsed() < MAX_TIMEOUT {
 		if w.upgrade().is_none() {
 			return;
 		}
 
-		if !warned && instant.elapsed() > warn_timeout {
+		if !warned && instant.elapsed() > WARN_TIMEOUT {
 			warned = true;
 			warn!("Shutdown is taking longer than expected.");
 		}
 
-		thread::sleep(sleep_duration);
+		thread::sleep(SLEEP_DURATION);
+
+		// When debugging shutdown issues on a nightly build it can help to enable this with the
+		// `#![feature(weak_counts)]` added to lib.rs (TODO: enable when
+		// https://github.com/rust-lang/rust/issues/57977 is stable)
+		// trace!(target: "shutdown", "Waiting for client to drop, strong_count={:?}, weak_count={:?}", w.strong_count(), w.weak_count());
+		trace!(target: "shutdown", "Waiting for client to drop");
 	}
 
 	warn!("Shutdown timeout reached, exiting uncleanly.");
